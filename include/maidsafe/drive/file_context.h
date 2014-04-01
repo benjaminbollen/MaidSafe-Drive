@@ -40,8 +40,6 @@ namespace detail {
 class Directory;
 
 struct FileContext {
-  typedef data_stores::DataBuffer<std::string> Buffer;
-
   FileContext();
   FileContext(FileContext&& other);
   FileContext(MetaData meta_data_in, Directory* parent_in);
@@ -50,7 +48,6 @@ struct FileContext {
   ~FileContext();
 
   MetaData meta_data;
-  std::unique_ptr<Buffer> buffer;
   std::unique_ptr<encrypt::SelfEncryptor> self_encryptor;
   std::unique_ptr<boost::asio::steady_timer> timer;
   std::unique_ptr<std::atomic<int>> open_count;

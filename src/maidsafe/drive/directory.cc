@@ -50,36 +50,10 @@ std::function<void(const boost::system::error_code&)> GetStoreFunctor(
   };
 }
 
-void FlushEncryptor(FileContext* file_context,
-                    std::function<void(const ImmutableData&)> put_chunk_functor,
-                    std::vector<ImmutableData::Name>& chunks_to_be_incremented) {
+void FlushEncryptor(FileContext* file_context) {
   file_context->self_encryptor->Flush();
-  if (file_context->self_encryptor->original_data_map().chunks.empty()) {
-    // If the original data map didn't contain any chunks, just store the new ones.
-    for (const auto& chunk : file_context->self_encryptor->data_map().chunks) {
-      auto content(file_context->buffer->Get(chunk.hash));
-      put_chunk_functor(ImmutableData(content));
-    }
-  } else {
-    // Check each new chunk against the original data map's chunks.  Store the new ones and
-    // increment the reference count on the existing chunks.
-    for (const auto& chunk : file_context->self_encryptor->data_map().chunks) {
-      if (std::any_of(std::begin(file_context->self_encryptor->original_data_map().chunks),
-                      std::end(file_context->self_encryptor->original_data_map().chunks),
-                      [&chunk](const encrypt::ChunkDetails& original_chunk) {
-                            return chunk.hash == original_chunk.hash;
-                      })) {
-        chunks_to_be_incremented.emplace_back(Identity(chunk.hash));
-      } else {
-        auto content(file_context->buffer->Get(chunk.hash));
-        put_chunk_functor(ImmutableData(content));
-      }
-    }
-  }
-  if (*file_context->open_count == 0) {
+  if (file_context->open_count == 0)
     file_context->self_encryptor.reset();
-    file_context->buffer.reset();
-  }
   file_context->flushed = true;
 }
 
@@ -88,14 +62,10 @@ void FlushEncryptor(FileContext* file_context,
 Directory::Directory(
     ParentId parent_id, DirectoryId directory_id, boost::asio::io_service& io_service,
     std::function<void(Directory*)> put_functor,  // NOLINT
-    std::function<void(const ImmutableData&)> put_chunk_functor,
-    std::function<void(const std::vector<ImmutableData::Name>&)> increment_chunks_functor,
     const boost::filesystem::path& path)
         : mutex_(), cond_var_(), parent_id_(std::move(parent_id)),
           directory_id_(std::move(directory_id)), timer_(io_service),
           store_functor_(GetStoreFunctor(this, put_functor, path)),
-          put_chunk_functor_(put_chunk_functor),
-          increment_chunks_functor_(increment_chunks_functor), chunks_to_be_incremented_(),
           versions_(), max_versions_(kMaxVersions), children_(), children_count_position_(0),
           store_state_(StoreState::kComplete) {
   DoScheduleForStoring();
@@ -106,13 +76,9 @@ Directory::Directory(
     const std::vector<StructuredDataVersions::VersionName>& versions,
     boost::asio::io_service& io_service,
     std::function<void(Directory*)> put_functor,  // NOLINT
-    std::function<void(const ImmutableData&)> put_chunk_functor,
-    std::function<void(const std::vector<ImmutableData::Name>&)> increment_chunks_functor,
     const boost::filesystem::path& path)
         : mutex_(), cond_var_(), parent_id_(std::move(parent_id)), directory_id_(),
           timer_(io_service), store_functor_(GetStoreFunctor(this, put_functor, path)),
-          put_chunk_functor_(put_chunk_functor),
-          increment_chunks_functor_(increment_chunks_functor), chunks_to_be_incremented_(),
           versions_(std::begin(versions), std::end(versions)), max_versions_(kMaxVersions),
           children_(), children_count_position_(0), store_state_(StoreState::kComplete) {
   protobuf::Directory proto_directory;
@@ -145,22 +111,12 @@ std::string Directory::Serialise() {
 
     for (const auto& child : children_) {
       child->meta_data.ToProtobuf(proto_directory.add_children());
-      if (child->self_encryptor) {  // Child is a file which has been opened
+      if (child->self_encryptor) {
         child->timer->cancel();
-        FlushEncryptor(child.get(), put_chunk_functor_, chunks_to_be_incremented_);
+        FlushEncryptor(child.get());
         child->flushed = false;
-      } else if (child->meta_data.data_map) {
-        if (child->flushed) {  // Child is a file which has already been flushed
-          child->flushed = false;
-        } else {  // Child is a file which has not been opened
-          for (const auto& chunk : child->meta_data.data_map->chunks)
-            chunks_to_be_incremented_.emplace_back(Identity(chunk.hash));
-        }
       }
     }
-    increment_chunks_functor_(chunks_to_be_incremented_);
-    chunks_to_be_incremented_.clear();
-
     store_state_ = StoreState::kOngoing;
   }
   return proto_directory.SerializeAsString();
@@ -169,7 +125,7 @@ std::string Directory::Serialise() {
 void Directory::FlushChildAndDeleteEncryptor(FileContext* child) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (child->self_encryptor)  // Child could already have been flushed via 'Directory::Serialise'
-    FlushEncryptor(child, put_chunk_functor_, chunks_to_be_incremented_);
+    FlushEncryptor(child);
 }
 
 std::tuple<DirectoryId, StructuredDataVersions::VersionName, StructuredDataVersions::VersionName>
@@ -262,8 +218,7 @@ const FileContext* Directory::GetChild(const fs::path& name) const {
   // The open_count must be >=0.  If > 0 and the context doesn't represent a directory, the buffer
   // and encryptor should be non-null.
   assert(*(*itr)->open_count == 0 || (*(*itr)->open_count > 0 &&
-      ((*itr)->meta_data.directory_id ||
-          ((*itr)->buffer && (*itr)->self_encryptor && (*itr)->timer))));
+      ((*itr)->meta_data.directory_id || ((*itr)->self_encryptor && (*itr)->timer))));
   return itr->get();
 }
 
@@ -276,8 +231,7 @@ FileContext* Directory::GetMutableChild(const fs::path& name) {
   // The open_count must be >=0.  If > 0 and the context doesn't represent a directory, the buffer
   // and encryptor should be non-null.
   assert(*(*itr)->open_count == 0 || (*(*itr)->open_count > 0 &&
-      ((*itr)->meta_data.directory_id ||
-          ((*itr)->buffer && (*itr)->self_encryptor && (*itr)->timer))));
+      ((*itr)->meta_data.directory_id || ((*itr)->self_encryptor && (*itr)->timer))));
   return itr->get();
 }
 

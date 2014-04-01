@@ -83,21 +83,17 @@ class Drive {
   std::shared_ptr<Storage> storage_;
   const boost::filesystem::path kMountDir_;
   const boost::filesystem::path kUserAppDir_;
-  const std::unique_ptr<const boost::filesystem::path,
-                        std::function<void(const boost::filesystem::path* const)>> kBufferRoot_;
   const std::string kMountStatusSharedObjectName_;
   boost::promise<void> mount_promise_;
   std::once_flag unmounted_once_flag_;
 
  private:
-  typedef detail::FileContext::Buffer Buffer;
-  void InitialiseEncryptor(const boost::filesystem::path& relative_path,
-                           detail::FileContext& file_context);
+  void InitialiseEncryptor(detail::FileContext& file_context);
   void ScheduleDeletionOfEncryptor(detail::FileContext* file_context);
 
   std::function<NonEmptyString(const std::string&)> get_chunk_from_store_;
-  MemoryUsage default_max_buffer_memory_;
-  DiskUsage default_max_buffer_disk_;
+  std::function<void(const ImmutableData&)> put_chunk_to_store_;
+  std::function<void(const std::string&)> delete_chunk_from_store_;
 
  protected:
   AsioService asio_service_;
@@ -114,40 +110,41 @@ Drive<Storage>::Drive(std::shared_ptr<Storage> storage, const Identity& unique_u
     : storage_(storage),
       kMountDir_(mount_dir),
       kUserAppDir_(user_app_dir),
-      kBufferRoot_(new boost::filesystem::path(user_app_dir / "Buffers"),
-                   [](const boost::filesystem::path* const delete_path) {
-                     if (!delete_path->empty()) {
-                       boost::system::error_code ec;
-                       if (boost::filesystem::remove_all(*delete_path, ec) == 0)
-                         LOG(kWarning) << "Failed to remove " << *delete_path;
-                       if (ec.value() != 0)
-                         LOG(kWarning) << "Error removing " << *delete_path << "  " << ec.message();
-                     }
-                     delete delete_path;
-                   }),
       kMountStatusSharedObjectName_(mount_status_shared_object_name),
       mount_promise_(),
       unmounted_once_flag_(),
-      get_chunk_from_store_(),
-      // TODO(Fraser#5#): 2013-11-27 - BEFORE_RELEASE - confirm the following 2 variables.
-      default_max_buffer_memory_(Concurrency() * 1024 * 1024),  // cores * default chunk size
-      default_max_buffer_disk_(static_cast<uint64_t>(
-          boost::filesystem::space(kUserAppDir_).available / 10)),
+      get_chunk_from_store_([this](const std::string& name)->NonEmptyString {
+          try {
+            auto chunk(storage_->Get(ImmutableData::Name(Identity(name))).get());
+            return chunk.data();
+          }
+          catch (const std::exception& e) {
+            LOG(kError) << "Failed to get " << name << " from storage: " << e.what();
+            throw;
+          }
+        }),
+      put_chunk_to_store_([this](const ImmutableData& chunk)->void {
+          try {
+            storage_->Put(chunk);
+          }
+          catch(const std::exception& e) {
+            LOG(kError) << "Failed to put " << chunk.name().value.string() << " to storage: "
+                        << e.what();
+            throw;
+          }
+        }),
+      delete_chunk_from_store_([this](const std::string& name)->void {
+          try {
+            storage_->Delete(ImmutableData::Name(Identity(name)));
+          }
+          catch (const std::exception& e) {
+            LOG(kError) << "Failed to delete " << name << " from storage: " << e.what();
+            throw;
+          }
+        }),
       asio_service_(2),
-      directory_handler_(storage, unique_user_id, root_parent_id,
-          boost::filesystem::unique_path(*kBufferRoot_ / "%%%%%-%%%%%-%%%%%-%%%%%"),
-          create, asio_service_.service()) {
-  get_chunk_from_store_ = [this](const std::string& name)->NonEmptyString {
-    try {
-      auto chunk(storage_->Get(ImmutableData::Name(Identity(name))).get());
-      return chunk.data();
-    }
-    catch (const std::exception& e) {
-      LOG(kError) << "Failed to get chunk from storage: " << e.what();
-      throw;
-    }
-  };
-}
+      directory_handler_(storage, unique_user_id, root_parent_id, create, get_chunk_from_store_,
+                         put_chunk_to_store_, delete_chunk_from_store_, asio_service_.service()) {}
 
 template <typename Storage>
 Drive<Storage>::~Drive() {
@@ -165,28 +162,17 @@ boost::future<void> Drive<Storage>::GetMountFuture() {
 }
 
 template <typename Storage>
-void Drive<Storage>::InitialiseEncryptor(const boost::filesystem::path& relative_path,
-                                         detail::FileContext& file_context) {
+void Drive<Storage>::InitialiseEncryptor(detail::FileContext& file_context) {
   assert(*file_context.open_count == 0 || *file_context.open_count == 1);
   if (!file_context.timer) {
     file_context.timer.reset(new boost::asio::steady_timer(asio_service_.service()));
   } else if (file_context.timer->cancel() > 0) {
-    // Encryptor and buffer were about to to be deleted
-    assert(file_context.buffer && file_context.self_encryptor);
-    return;
-  } else if (file_context.buffer || file_context.self_encryptor) {
-    assert(file_context.buffer && file_context.self_encryptor);
+    // Encryptor was about to to be deleted
+    assert(file_context.self_encryptor);
     return;
   }
-  auto buffer_pop_functor([this, relative_path](const std::string& name,
-                                                const NonEmptyString& content) {
-    directory_handler_.HandleDataPoppedFromBuffer(relative_path, name, content);
-  });
-  auto disk_buffer_path(boost::filesystem::unique_path(*kBufferRoot_ / "%%%%%-%%%%%-%%%%%-%%%%%"));
-  file_context.buffer.reset(new detail::FileContext::Buffer(default_max_buffer_memory_,
-      default_max_buffer_disk_, buffer_pop_functor, disk_buffer_path, true));
   file_context.self_encryptor.reset(new encrypt::SelfEncryptor(*file_context.meta_data.data_map,
-      *file_context.buffer, get_chunk_from_store_));
+      get_chunk_from_store_, put_chunk_to_store_, delete_chunk_from_store_));
 }
 
 template <typename Storage>
@@ -204,16 +190,15 @@ void Drive<Storage>::ScheduleDeletionOfEncryptor(detail::FileContext* file_conte
       if (ec != boost::asio::error::operation_aborted) {
         if (*file_context->open_count == 0) {
 #ifndef NDEBUG
-          LOG(kInfo) << "Deleting encryptor and buffer for " << name;
+          LOG(kInfo) << "Deleting encryptor for " << name;
 #endif
           file_context->parent->FlushChildAndDeleteEncryptor(file_context);
         } else {
-          LOG(kWarning) << "About to delete encryptor and buffer for "
-                        << file_context->meta_data.name << " but open_count > 0";
+          LOG(kWarning) << "About to delete encryptor for " << name << " but open_count > 0";
         }
       } else {
 #ifndef NDEBUG
-        LOG(kSuccess) << "Timer was cancelled - not deleting encryptor and buffer for " << name;
+        LOG(kSuccess) << "Timer was cancelled - not deleting encryptor for " << name;
 #endif
       }
   });
@@ -238,7 +223,7 @@ template <typename Storage>
 void Drive<Storage>::Create(const boost::filesystem::path& relative_path,
                             detail::FileContext&& file_context) {
   if (!file_context.meta_data.directory_id) {
-    InitialiseEncryptor(relative_path, file_context);
+    InitialiseEncryptor(file_context);
     *file_context.open_count = 1;
   }
   directory_handler_.Add(relative_path, std::move(file_context));
@@ -252,7 +237,7 @@ void Drive<Storage>::Open(const boost::filesystem::path& relative_path) {
     LOG(kInfo) << "Opening " << relative_path << " open count: " << *file_context->open_count + 1;
     if (++(*file_context->open_count) == 1) {
       std::lock_guard<std::mutex> lock(parent->mutex_);
-      InitialiseEncryptor(relative_path, *file_context);
+      InitialiseEncryptor(*file_context);
     }
   }
 }

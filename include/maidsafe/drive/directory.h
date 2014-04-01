@@ -59,14 +59,10 @@ class Directory {
  public:
   Directory(ParentId parent_id, DirectoryId directory_id, boost::asio::io_service& io_service,
             std::function<void(Directory*)> put_functor,  // NOLINT
-            std::function<void(const ImmutableData&)> put_chunk_functor,
-            std::function<void(const std::vector<ImmutableData::Name>&)> increment_chunks_functor,
             const boost::filesystem::path& path);  // NOLINT
   Directory(ParentId parent_id, const std::string& serialised_directory,
             const std::vector<StructuredDataVersions::VersionName>& versions,
             boost::asio::io_service& io_service, std::function<void(Directory*)> put_functor,  // NOLINT
-            std::function<void(const ImmutableData&)> put_chunk_functor,
-            std::function<void(const std::vector<ImmutableData::Name>&)> increment_chunks_functor,
             const boost::filesystem::path& path);
   ~Directory();
   // This marks the start of an attempt to store the directory.  It serialises the appropriate
@@ -122,9 +118,6 @@ class Directory {
   DirectoryId directory_id_;
   boost::asio::steady_timer timer_;
   std::function<void(const boost::system::error_code&)> store_functor_;
-  std::function<void(const ImmutableData&)> put_chunk_functor_;
-  std::function<void(std::vector<ImmutableData::Name>)> increment_chunks_functor_;
-  std::vector<ImmutableData::Name> chunks_to_be_incremented_;
   std::deque<StructuredDataVersions::VersionName> versions_;
   MaxVersions max_versions_;
   Children children_;
