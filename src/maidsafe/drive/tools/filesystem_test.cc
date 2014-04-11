@@ -1899,12 +1899,10 @@ TEST_CASE("Cross-platform file check", "[Filesystem][behavioural]") {
     REQUIRE(original_file.good());
 
     std::wstring original_string(256, 0), recovered_string(256, 0);
-    int line_count = 0;
     while(!original_file.eof() && !recovered_file.eof()) {
       original_file.getline(const_cast<wchar_t*>(original_string.c_str()), 256);
       recovered_file.getline(const_cast<wchar_t*>(recovered_string.c_str()), 256);
       REQUIRE(original_string == recovered_string);
-      ++line_count;
     }
     REQUIRE((original_file.eof() && recovered_file.eof()));
   }
