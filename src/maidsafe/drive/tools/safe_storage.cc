@@ -1,4 +1,4 @@
-/*  Copyright 2013 MaidSafe.net limited
+/*  Copyright 2014 MaidSafe.net limited
 
     This MaidSafe Software is licensed to you under (1) the MaidSafe.net Commercial License,
     version 1.0 or later, or (2) The General Public License (GPL), version 3, depending on which
@@ -54,9 +54,6 @@ namespace maidsafe {
 
 namespace test {
 
-int RunTool(int argc, char** argv, const fs::path& root, const fs::path& temp,
-            const fs::path& storage, int test_type);
-
 namespace {
 
 #ifdef _MSC_VER
@@ -72,20 +69,10 @@ fs::path g_root, g_temp, g_storage;
 std::unique_ptr<drive::Launcher> g_launcher;
 std::string g_error_message;
 int g_return_code(0);
-enum class TestType {
-  kLocal = static_cast<int>(drive::DriveType::kLocal),
-  kNetwork = static_cast<int>(drive::DriveType::kNetwork),
-  kLocalConsole = static_cast<int>(drive::DriveType::kLocalConsole),
-  kNetworkConsole = static_cast<int>(drive::DriveType::kNetworkConsole),
-  kDisk
-} g_test_type;
-bool g_enable_vfs_logging;
-#ifdef MAIDSAFE_WIN32
-const std::string kHelpInfo("You must pass exactly one of '--disk', '--local', '--local_console', "
-                            "'--network' or '--network_console'");
-#else
-const std::string kHelpInfo("You must pass exactly one of '--disk', '--local' or '--network'");
-#endif
+bool g_enable_vfs_logging(false);
+bool g_running(true);
+std::shared_ptr<passport::Anmaid> g_anmaid;
+std::shared_ptr<passport::Anpmid> g_anpmid;
 
 void CreateDir(const fs::path& dir) {
   boost::system::error_code error_code;
@@ -113,12 +100,7 @@ void RemoveTempDirectory() {
 
 void SetUpRootDirectory(fs::path base_dir) {
 #ifdef MAIDSAFE_WIN32
-  if (g_test_type == TestType::kDisk) {
-    g_root = fs::unique_path(base_dir / "MaidSafe_Root_Filesystem_%%%%-%%%%-%%%%");
-    CreateDir(g_root);
-  } else {
-    g_root = drive::GetNextAvailableDrivePath();
-  }
+  g_root = drive::GetNextAvailableDrivePath();
 #else
   g_root = fs::unique_path(base_dir / "MaidSafe_Root_Filesystem_%%%%-%%%%-%%%%");
   CreateDir(g_root);
@@ -160,28 +142,10 @@ void RemoveStorageDirectory(const fs::path& storage_path) {
 
 po::options_description CommandLineOptions() {
   boost::system::error_code error_code;
-  po::options_description command_line_options(
-      std::string("Filesystem Tool Options:\n") + kHelpInfo);
+  po::options_description command_line_options(std::string("SafeStorage Tool Options:\n"));
   command_line_options.add_options()("help,h", "Show help message.")
-      ("disk", "Perform all tests/benchmarks on native hard disk.")
-      ("local", "Perform all tests/benchmarks on local VFS.")
-      ("network", "Perform all tests/benchmarks on network VFS.")
-      ("peer", po::value<std::string>(), "Endpoint of peer, if using network VFS.")
-      ("key_index,k", po::value<int>()->default_value(10),
-                      "The index of key to be used as client")
-      ("keys_path", po::value<std::string>()->default_value(fs::path(
-                       fs::temp_directory_path(error_code) / "key_directory.dat").string()),
-                    "Path to keys file");
-#ifdef MAIDSAFE_WIN32
-  command_line_options.add_options()
-      ("local_console", "Perform all tests/benchmarks on local VFS running as a console app.")
-      ("network_console", "Perform all tests/benchmarks on network VFS running as a console app.")
-      ("enable_vfs_logging", po::bool_switch(&g_enable_vfs_logging), "Enable logging on the VFS "
-          "(this is only useful if used with '--local_console' or '--network_console'.");
-#else
-  command_line_options.add_options() ("enable_vfs_logging", po::bool_switch(&g_enable_vfs_logging),
-      "Enable logging on the VFS (this is only useful if used with '--local' or '--network'.");
-#endif
+      ("peer", po::value<std::string>(), "Endpoint of peer, for connection to SAFE network")
+      ("enable_vfs_logging", po::bool_switch(&g_enable_vfs_logging), "Enable logging on the VFS");
   return command_line_options;
 }
 
@@ -215,71 +179,6 @@ void HandleHelp(const po::variables_map& variables_map) {
   }
 }
 
-void GetTestType(const po::variables_map& variables_map) {
-  int option_count(0);
-  if (variables_map.count("disk")) {
-    ++option_count;
-    g_test_type = TestType::kDisk;
-  }
-  if (variables_map.count("local")) {
-    ++option_count;
-    g_test_type = TestType::kLocal;
-  }
-  if (variables_map.count("network")) {
-    ++option_count;
-    g_test_type = TestType::kNetwork;
-  }
-  if (variables_map.count("local_console")) {
-    ++option_count;
-    g_test_type = TestType::kLocalConsole;
-  }
-  if (variables_map.count("network_console")) {
-    ++option_count;
-    g_test_type = TestType::kNetworkConsole;
-  }
-  if (option_count != 1) {
-    std::ostringstream stream;
-    stream << kHelpInfo << "'.  For all options, run '--help'\n\n";
-    g_error_message = stream.str();
-    g_return_code = 1;
-    BOOST_THROW_EXCEPTION(MakeError(CommonErrors::invalid_parameter));
-  }
-}
-
-std::function<void()> PrepareDisk() {
-  SetUpTempDirectory();
-  SetUpRootDirectory(fs::temp_directory_path());
-  return [] {  // NOLINT
-    RemoveTempDirectory();
-    RemoveRootDirectory();
-  };
-}
-
-std::function<void()> PrepareLocalVfs() {
-  SetUpTempDirectory();
-  drive::Options options;
-  SetUpRootDirectory(GetHomeDir());
-  options.mount_path = g_root;
-  options.storage_path = SetUpStorageDirectory();
-  options.keys_path = fs::path(fs::temp_directory_path() / "key_directory.dat");
-  options.drive_name = RandomAlphaNumericString(10);
-  options.unique_id = Identity(RandomString(64));
-  options.root_parent_id = Identity(RandomString(64));
-  options.create_store = true;
-  options.drive_type = static_cast<drive::DriveType>(g_test_type);
-  if (g_enable_vfs_logging)
-    options.drive_logging_args = "--log_* V --log_colour_mode 2 --log_no_async";
-
-  g_launcher.reset(new drive::Launcher(options));
-  g_root = g_launcher->kMountPath();
-
-  return [options] {  // NOLINT
-    RemoveTempDirectory();
-    RemoveStorageDirectory(options.storage_path);
-    RemoveRootDirectory();
-  };
-}
-
 std::string GetStringFromProgramOption(const std::string& option_name,
                                        const po::variables_map& variables_map) {
   if (variables_map.count(option_name)) {
@@ -291,24 +190,23 @@ std::string GetStringFromProgramOption(const std::string& option_name,
   }
 }
 
-std::function<void()> PrepareNetworkVfs(const po::variables_map& variables_map) {
+std::function<void()> PrepareNetworkVfs(drive::Options& options, bool create_account) {
   SetUpTempDirectory();
-  drive::Options options;
   SetUpRootDirectory(GetHomeDir());
+
   options.mount_path = g_root;
   options.storage_path = SetUpStorageDirectory();
-  options.keys_path = GetStringFromProgramOption("keys_path", variables_map);
-  options.peer_endpoint = GetStringFromProgramOption("peer", variables_map);
-  options.key_index = variables_map.at("key_index").as<int>();
   options.drive_name = RandomAlphaNumericString(10);
-  options.unique_id = Identity(RandomString(64));
-  options.root_parent_id = Identity(RandomString(64));
-  options.create_store = true;
-  options.drive_type = static_cast<drive::DriveType>(g_test_type);
+  options.monitor_parent = false;
+  options.create_store = false;
   if (g_enable_vfs_logging)
     options.drive_logging_args = "--log_* V --log_colour_mode 2 --log_no_async";
 
-  g_launcher.reset(new drive::Launcher(options));
+  if (create_account)
+    g_launcher.reset(new drive::Launcher(options, *g_anmaid));
+  else
+    g_launcher.reset(new drive::Launcher(options));
+
   g_root = g_launcher->kMountPath();
 
   return [options] {  // NOLINT
@@ -316,21 +214,6 @@ std::function<void()> PrepareNetworkVfs(const po::variables_map& variables_map) 
     RemoveStorageDirectory(options.storage_path);
     RemoveRootDirectory();
   };
-}
-
-std::function<void()> PrepareTest(const po::variables_map& variables_map) {
-  switch (g_test_type) {
-    case TestType::kDisk:
-      return PrepareDisk();
-    case TestType::kLocal:
-    case TestType::kLocalConsole:
-      return PrepareLocalVfs();
-    case TestType::kNetwork:
-    case TestType::kNetworkConsole:
-      return PrepareNetworkVfs(variables_map);
-    default:
-      BOOST_THROW_EXCEPTION(MakeError(CommonErrors::invalid_parameter));
-  }
 }
 
 }  // unnamed namespace
@@ -347,17 +230,28 @@ int main(int argc, char** argv) {
       unused_options.emplace_back(&unused[0]);
     auto variables_map(maidsafe::test::ParseAllOptions(argc, argv, unused_options));
     maidsafe::test::HandleHelp(variables_map);
-    maidsafe::test::GetTestType(variables_map);
+    maidsafe::test::g_anmaid.reset(new maidsafe::passport::Anmaid());
+    maidsafe::test::g_anpmid.reset(new maidsafe::passport::Anpmid());
+    bool create_account(true);
+    maidsafe::drive::Options options;
+    options.peer_endpoint = maidsafe::test::GetStringFromProgramOption("peer", variables_map);
 
-    auto cleanup_functor(maidsafe::test::PrepareTest(variables_map));
-    maidsafe::on_scope_exit cleanup_on_exit(cleanup_functor);
-
-    auto tests_result(maidsafe::test::RunTool(argc, argv, maidsafe::test::g_root,
-                                              maidsafe::test::g_temp, maidsafe::test::g_storage,
-                                              static_cast<int>(maidsafe::test::g_test_type)));
-    if (maidsafe::test::g_launcher)
-      maidsafe::test::g_launcher->StopDriveProcess();
-    return tests_result;
+    while (maidsafe::test::g_running) {
+      auto cleanup_functor(maidsafe::test::PrepareNetworkVfs(options, create_account));
+      create_account = false;
+      maidsafe::on_scope_exit cleanup_on_exit(cleanup_functor);
+      std::cout << " (enter \"1\" to logout and re-login; \"0\" to stop): ";
+      std::string choice;
+      std::getline(std::cin, choice);
+      if (choice == "1") {
+        maidsafe::test::g_launcher->StopDriveProcess(true);
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        maidsafe::test::g_launcher.reset();
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+      }
+      if (choice == "0")
+        maidsafe::test::g_running = false;
+    }
   }
   catch (const std::exception& e) {
     if (!maidsafe::test::g_error_message.empty()) {
@@ -369,5 +263,5 @@ int main(int argc, char** argv) {
   catch (...) {
     LOG(kError) << "Exception of unknown type!";
   }
-  return 64;
+  return 0;
 }

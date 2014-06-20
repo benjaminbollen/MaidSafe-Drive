@@ -86,7 +86,9 @@ endif()
 ms_glob_dir(DriveTests ${DriveSourcesDir}/tests Tests)
 ms_glob_dir(DriveTools ${DriveSourcesDir}/tools Tools)
 set(DriveLauncherFiles ${DriveApiDir}/tools/launcher.h ${DriveSourcesDir}/tools/launcher.cc)
+set(SafeStorageFiles ${DriveApiDir}/tools/safe_storage.cc)
 list(REMOVE_ITEM DriveToolsAllFiles ${DriveLauncherFiles})
+list(REMOVE_ITEM DriveToolsAllFiles ${SafeStorageFiles})
 ms_glob_dir(DriveToolsCommands ${DriveSourcesDir}/tools/commands Commands)
 list(REMOVE_ITEM DriveToolsCommandsAllFiles ${UnixFileCommands} ${WindowsFileCommands})
 if(WIN32)
@@ -111,6 +113,8 @@ if(WIN32)
   endif()
 elseif(APPLE)
   target_link_libraries(maidsafe_drive ${Fuse_LIBRARY})
+elseif(BSD)
+  target_link_libraries(maidsafe_drive ${Fuse_LIBRARY})
 else()
   target_link_libraries(maidsafe_drive ${Fuse_LIBRARY} rt dl)
 endif()
@@ -118,33 +122,44 @@ endif()
 ms_add_static_library(maidsafe_drive_launcher ${DriveLauncherFiles})
 target_include_directories(maidsafe_drive_launcher PUBLIC ${PROJECT_SOURCE_DIR}/include PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(maidsafe_drive maidsafe_drive_launcher maidsafe_encrypt)
-target_link_libraries(maidsafe_drive_launcher maidsafe_common)
+target_link_libraries(maidsafe_drive_launcher maidsafe_common maidsafe_nfs_client)
 
-ms_add_executable(local_drive "Production" ${LocalDriveMain})
-target_link_libraries(local_drive maidsafe_drive maidsafe_drive_launcher)
-ms_add_executable(network_drive "Production" ${NetworkDriveMain})
-target_link_libraries(network_drive maidsafe_drive maidsafe_drive_launcher maidsafe_nfs_client)
+ms_add_executable(local_drive "Tools/Drive" ${LocalDriveMain})
+target_link_libraries(local_drive maidsafe_drive maidsafe_drive_launcher maidsafe_nfs_client)
+ms_add_executable(drive "Production" ${NetworkDriveMain})
+target_link_libraries(drive maidsafe_drive maidsafe_drive_launcher maidsafe_nfs_client)
+ms_add_executable(safe_storage "Tools/Drive" ${DriveSourcesDir}/tools/safe_storage.cc)
+target_include_directories(safe_storage PRIVATE $<TARGET_PROPERTY:maidsafe_drive,INTERFACE_INCLUDE_DIRECTORIES>)
+target_link_libraries(safe_storage maidsafe_drive_launcher)
+
 if(WIN32)
-  set_property(TARGET local_drive network_drive PROPERTY WIN32_EXECUTABLE TRUE)
+  set_property(TARGET local_drive drive PROPERTY WIN32_EXECUTABLE TRUE)
+  target_compile_options(drive PUBLIC $<$<CONFIG:Debug>: /bigobj>)
   if(MaidsafeTesting)
-    ms_add_executable(local_drive_console "Production" ${LocalDriveMain})
-    target_link_libraries(local_drive_console maidsafe_drive maidsafe_drive_launcher)
-    ms_add_executable(network_drive_console "Production" ${NetworkDriveMain})
-    target_link_libraries(network_drive_console maidsafe_drive maidsafe_drive_launcher maidsafe_nfs_client)
+    ms_add_executable(local_drive_console "Tools/Drive" ${LocalDriveMain})
+    target_link_libraries(local_drive_console maidsafe_drive maidsafe_drive_launcher maidsafe_nfs_client)
+    ms_add_executable(drive_console "Tools/Drive" ${NetworkDriveMain})
+    target_link_libraries(drive_console maidsafe_drive maidsafe_drive_launcher maidsafe_nfs_client)
+    target_compile_options(drive_console PUBLIC $<$<CONFIG:Debug>: /bigobj>)
   endif()
 endif()
 
+add_dependencies(safe_storage drive)
+if(WIN32)
+  add_dependencies(safe_storage drive_console)
+endif()
+
 if(MaidsafeTesting)
-  ms_add_executable(filesystem_benchmark "Tools/Drive"
-                    ${DriveSourcesDir}/tools/filesystem_benchmark.cc
+  ms_add_executable(filesystem_weekly "Tests/Drive"
+                    ${DriveSourcesDir}/tools/filesystem_weekly.cc
                     ${DriveSourcesDir}/tools/tool_main.cc)
   if(WIN32)
-    ms_add_executable(filesystem_test "Tools/Drive"
+    ms_add_executable(filesystem_test "Tests/Drive"
                       ${DriveSourcesDir}/tools/filesystem_test.cc
                       ${DriveSourcesDir}/tools/tool_main.cc
                       ${WindowsFileCommands})
   else()
-    ms_add_executable(filesystem_test "Tools/Drive"
+    ms_add_executable(filesystem_test "Tests/Drive"
                       ${DriveSourcesDir}/tools/filesystem_test.cc
                       ${DriveSourcesDir}/tools/tool_main.cc
                       ${UnixFileCommands})
@@ -157,30 +172,31 @@ if(MaidsafeTesting)
   ms_add_executable(test_drive "Tests/Drive" ${DriveTestsAllFiles})
   target_include_directories(test_drive PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
-  add_dependencies(filesystem_benchmark local_drive network_drive)
-  add_dependencies(filesystem_test local_drive network_drive)
-  add_dependencies(filesystem_commands local_drive network_drive)
+  add_dependencies(filesystem_weekly local_drive drive)
+  add_dependencies(filesystem_test local_drive drive)
+  add_dependencies(filesystem_commands local_drive drive)
   if(WIN32)
-    add_dependencies(filesystem_benchmark local_drive_console network_drive_console)
-    add_dependencies(filesystem_test local_drive_console network_drive_console)
-    add_dependencies(filesystem_commands local_drive_console network_drive_console)
+    add_dependencies(filesystem_weekly local_drive_console drive_console)
+    add_dependencies(filesystem_test local_drive_console drive_console)
+    add_dependencies(filesystem_commands local_drive_console drive_console)
   endif()
-  target_include_directories(filesystem_benchmark PRIVATE $<TARGET_PROPERTY:maidsafe_drive,INTERFACE_INCLUDE_DIRECTORIES>)
+  target_include_directories(filesystem_weekly PRIVATE $<TARGET_PROPERTY:maidsafe_drive,INTERFACE_INCLUDE_DIRECTORIES>)
   target_include_directories(filesystem_test PRIVATE $<TARGET_PROPERTY:maidsafe_drive,INTERFACE_INCLUDE_DIRECTORIES>)
   target_include_directories(filesystem_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
   target_include_directories(filesystem_commands PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
-  target_link_libraries(filesystem_benchmark maidsafe_drive_launcher)
-  target_link_libraries(filesystem_test maidsafe_drive_launcher)
+  target_link_libraries(filesystem_weekly maidsafe_drive_launcher maidsafe_test)
+  target_link_libraries(filesystem_test maidsafe_drive_launcher maidsafe_test)
   target_link_libraries(filesystem_commands maidsafe_drive_launcher maidsafe_drive)
+
   add_dependencies(filesystem_test catch)
-  target_link_libraries(test_drive maidsafe_drive)
+  target_link_libraries(test_drive maidsafe_drive maidsafe_nfs_client maidsafe_test)
 endif()
 
 ms_rename_outdated_built_exes()
 
 if(WIN32 AND NOT CbfsFound)
-  foreach(Target maidsafe_drive cbfs_driver local_drive network_drive local_drive_console network_drive_console filesystem_benchmark filesystem_test filesystem_commands test_drive)
+  foreach(Target maidsafe_drive cbfs_driver local_drive drive local_drive_console drive_console filesystem_weekly filesystem_test filesystem_commands test_drive)
     if(TARGET ${Target})
       set_target_properties(${Target} PROPERTIES EXCLUDE_FROM_ALL ON EXCLUDE_FROM_DEFAULT_BUILD ON)
     endif()
@@ -195,23 +211,33 @@ include(standard_flags)
 
 target_compile_definitions(maidsafe_drive PUBLIC $<$<BOOL:${UNIX}>:FUSE_USE_VERSION=26>)
 target_compile_definitions(local_drive PRIVATE $<$<BOOL:${WIN32}>:USES_WINMAIN>)
-target_compile_definitions(network_drive PRIVATE $<$<BOOL:${WIN32}>:USES_WINMAIN>)
+target_compile_definitions(drive PRIVATE $<$<BOOL:${WIN32}>:USES_WINMAIN>)
+
+target_compile_definitions(safe_storage PRIVATE $<TARGET_PROPERTY:maidsafe_drive,INTERFACE_COMPILE_DEFINITIONS>)
+set_property(TARGET safe_storage APPEND PROPERTY COMPILE_DEFINITIONS "CMAKE_GENERATOR=\"${CMAKE_GENERATOR}\"")
+if(WIN32)
+  if(CMAKE_CL_64)
+    set_property(TARGET safe_storage APPEND PROPERTY COMPILE_DEFINITIONS "VS_DEV_CMD=\"$ENV{VCInstallDir}vcvarsall.bat\" x86_amd64")
+  else()
+    set_property(TARGET safe_storage APPEND PROPERTY COMPILE_DEFINITIONS "VS_DEV_CMD=\"$ENV{VCInstallDir}vcvarsall.bat\" x86")
+  endif()
+endif()
 
 if(MaidsafeTesting)
-  target_compile_definitions(filesystem_benchmark PRIVATE $<TARGET_PROPERTY:maidsafe_drive,INTERFACE_COMPILE_DEFINITIONS>)
+  target_compile_definitions(filesystem_weekly PRIVATE $<TARGET_PROPERTY:maidsafe_drive,INTERFACE_COMPILE_DEFINITIONS>)
   target_compile_definitions(filesystem_test PRIVATE $<TARGET_PROPERTY:maidsafe_drive,INTERFACE_COMPILE_DEFINITIONS>)
-  set_property(TARGET filesystem_benchmark APPEND PROPERTY COMPILE_DEFINITIONS "CMAKE_GENERATOR=\"${CMAKE_GENERATOR}\"")
+  set_property(TARGET filesystem_weekly APPEND PROPERTY COMPILE_DEFINITIONS "CMAKE_GENERATOR=\"${CMAKE_GENERATOR}\"")
   set_property(TARGET filesystem_test APPEND PROPERTY COMPILE_DEFINITIONS "CMAKE_GENERATOR=\"${CMAKE_GENERATOR}\"")
-  set_property(TARGET filesystem_benchmark APPEND PROPERTY COMPILE_DEFINITIONS "DRIVE_TESTS_RESOURCES=${DriveTestsResourcesDir}")
+  set_property(TARGET filesystem_weekly APPEND PROPERTY COMPILE_DEFINITIONS "DRIVE_TESTS_RESOURCES=${DriveTestsResourcesDir}")
   set_property(TARGET filesystem_test APPEND PROPERTY COMPILE_DEFINITIONS "DRIVE_TESTS_RESOURCES=${DriveTestsResourcesDir}")
   if(WIN32)
     SET(VC_VARS_ALL $ENV{VCInstallDir}vcvarsall.bat)
     if(CMAKE_CL_64)
-      set_property(TARGET filesystem_benchmark APPEND PROPERTY COMPILE_DEFINITIONS "VS_DEV_CMD=\"${VC_VARS_ALL}\" x86_amd64")
-      set_property(TARGET filesystem_test APPEND PROPERTY COMPILE_DEFINITIONS "VS_DEV_CMD=\"${VC_VARS_ALL}\" x86_amd64")
+      set_property(TARGET filesystem_weekly APPEND PROPERTY COMPILE_DEFINITIONS "VS_DEV_CMD=\"$ENV{VCInstallDir}vcvarsall.bat\" x86_amd64")
+      set_property(TARGET filesystem_test APPEND PROPERTY COMPILE_DEFINITIONS "VS_DEV_CMD=\"$ENV{VCInstallDir}vcvarsall.bat\" x86_amd64")
     else()
-      set_property(TARGET filesystem_benchmark APPEND PROPERTY COMPILE_DEFINITIONS "VS_DEV_CMD=\"${VC_VARS_ALL}\" x86")
-      set_property(TARGET filesystem_test APPEND PROPERTY COMPILE_DEFINITIONS "VS_DEV_CMD=\"${VC_VARS_ALL}\" x86")
+      set_property(TARGET filesystem_weekly APPEND PROPERTY COMPILE_DEFINITIONS "VS_DEV_CMD=\"$ENV{VCInstallDir}vcvarsall.bat\" x86")
+      set_property(TARGET filesystem_test APPEND PROPERTY COMPILE_DEFINITIONS "VS_DEV_CMD=\"$ENV{VCInstallDir}vcvarsall.bat\" x86")
     endif()
   endif()
 endif()
@@ -219,8 +245,13 @@ if(CbfsFound)
   target_compile_definitions(cbfs_driver PRIVATE $<TARGET_PROPERTY:maidsafe_common,INTERFACE_COMPILE_DEFINITIONS>)
   target_compile_options(cbfs_driver PRIVATE $<TARGET_PROPERTY:maidsafe_common,INTERFACE_COMPILE_OPTIONS>)
   set_property(TARGET cbfs_driver APPEND_STRING PROPERTY LINK_FLAGS " /level='requireAdministrator' /uiAccess='false' ")
+  set_property(TARGET cbfs_driver APPEND PROPERTY COMPILE_DEFINITIONS "CBFS_ROOT_DIR=${CBFS_ROOT_DIR}")
+  set(ProductId "47584d51-4651-487a-534c-675242655154")
+  set_property(TARGET local_drive APPEND PROPERTY COMPILE_DEFINITIONS "PRODUCT_ID=${ProductId}")
+  set_property(TARGET drive APPEND PROPERTY COMPILE_DEFINITIONS "PRODUCT_ID=${ProductId}")
   if(MaidsafeTesting)
-    set_property(TARGET cbfs_driver APPEND PROPERTY COMPILE_DEFINITIONS "CBFS_ROOT_DIR=${CBFS_ROOT_DIR}")
+    set_property(TARGET local_drive_console APPEND PROPERTY COMPILE_DEFINITIONS "PRODUCT_ID=${ProductId}")
+    set_property(TARGET drive_console APPEND PROPERTY COMPILE_DEFINITIONS "PRODUCT_ID=${ProductId}")
   endif()
 endif()
 
@@ -240,24 +271,58 @@ if(MaidsafeTesting)
   add_test(NAME "\"Local Drive Filesystem Test\""
            COMMAND filesystem_test --durations yes --warn NoAssertions --local${Console}
                    --name "filesystem_test ($<CONFIGURATION> build)")
+  set(Timeout 120)
+  ms_update_test_timeout(Timeout)
   set_tests_properties("\"Real Disk Filesystem Test\"" "\"Local Drive Filesystem Test\"" PROPERTIES
                        FAIL_REGULAR_EXPRESSION "No tests ran"
-                       TIMEOUT 120
+                       TIMEOUT ${Timeout}
                        LABELS "Drive;Filesystem")
 
   if(WEEKLY)
-    add_test(NAME "\"Real Disk Benchmark\""
-             COMMAND filesystem_benchmark --durations yes --warn NoAssertions --disk
-                     --name "filesystem_benchmark ($<CONFIGURATION> build)")
-    add_test(NAME "\"Local Drive Benchmark\""
-             COMMAND filesystem_benchmark --durations yes --warn NoAssertions --local${Console}
-                     --name "filesystem_benchmark ($<CONFIGURATION> build)")
-    set_tests_properties("\"Real Disk Benchmark\"" "\"Local Drive Benchmark\"" PROPERTIES
+    add_test(NAME "\"Real Disk Weekly\""
+             COMMAND filesystem_weekly --durations yes --warn NoAssertions --disk
+                     --name "filesystem_weekly ($<CONFIGURATION> build)")
+    add_test(NAME "\"Local Drive Weekly\""
+             COMMAND filesystem_weekly --durations yes --warn NoAssertions --local${Console}
+                     --name "filesystem_weekly ($<CONFIGURATION> build)")
+    set(Timeout 10800)
+    ms_update_test_timeout(Timeout)
+    set_tests_properties("\"Real Disk Weekly\"" "\"Local Drive Weekly\"" PROPERTIES
                          FAIL_REGULAR_EXPRESSION "No tests ran"
-                         TIMEOUT 300
-                         LABELS "Drive;Filesystem;Benchmark")
+                         TIMEOUT ${Timeout}
+                         LABELS "Drive;Filesystem;Weekly")
   endif()
 
   ms_add_project_experimental()
   ms_test_summary_output()
 endif()
+
+
+#==================================================================================================#
+# Package                                                                                          #
+#==================================================================================================#
+# We can't install targets which are excluded from the ALL target.  Since all Drive targets are excluded if CBFS isn't found
+# we'll omit the install/package section in that case.
+if(WIN32 AND NOT CbfsFound)
+  return()
+endif()
+
+install(TARGETS maidsafe_drive maidsafe_drive_launcher COMPONENT Development CONFIGURATIONS Debug Release ARCHIVE DESTINATION lib)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/ COMPONENT Development DESTINATION include)
+
+foreach(Target cbfs_driver local_drive local_drive_console drive_console)
+  if(TARGET ${Target})
+    install(TARGETS ${Target} COMPONENT Tools CONFIGURATIONS Debug RUNTIME DESTINATION bin/debug)
+    install(TARGETS ${Target} COMPONENT Tools CONFIGURATIONS Release RUNTIME DESTINATION bin)
+  endif()
+endforeach()
+
+install(TARGETS drive COMPONENT Apps CONFIGURATIONS Debug RUNTIME DESTINATION bin/debug)
+install(TARGETS drive COMPONENT Apps CONFIGURATIONS Release RUNTIME DESTINATION bin)
+
+foreach(Target filesystem_weekly filesystem_test filesystem_commands test_drive)
+  if(TARGET ${Target})
+    install(TARGETS ${Target} COMPONENT Tests CONFIGURATIONS Debug RUNTIME DESTINATION bin/debug)
+    install(TARGETS ${Target} COMPONENT Tests CONFIGURATIONS Release RUNTIME DESTINATION bin)
+  endif()
+endforeach()
