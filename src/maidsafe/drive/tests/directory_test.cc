@@ -152,12 +152,12 @@ class DirectoryTest {
           CHECK(RemoveDirectoryListingsEntries(itr->path(),
                                                      relative_path / itr->path().filename()));
           CHECK_NOTHROW(file_context = directory.GetMutableChild(itr->path().filename()));
-          CHECK_NOTHROW(FileContext context(directory.RemoveChild(file_context->meta_data.name)));
+          CHECK_NOTHROW(directory.RemoveChild(file_context->meta_data.name));
           // Remove the disk directory also
           CheckedRemove(itr->path());
         } else if (fs::is_regular_file(*itr)) {
           CHECK_NOTHROW(file_context = directory.GetMutableChild(itr->path().filename()));
-          CHECK_NOTHROW(FileContext context(directory.RemoveChild(file_context->meta_data.name)));
+          CHECK_NOTHROW(directory.RemoveChild(file_context->meta_data.name));
           // Remove the disk file also
           CheckedRemove(itr->path());
         } else {
@@ -195,21 +195,19 @@ class DirectoryTest {
           fs::path new_path(relative_path / itr->path().filename());
           CHECK(RenameDirectoryEntries(itr->path(), new_path));
           CHECK_NOTHROW(file_context = directory.GetMutableChild(itr->path().filename()));
-          FileContext removed_context;
-          CHECK_NOTHROW(removed_context = directory.RemoveChild(file_context->meta_data.name));
+          CHECK_NOTHROW(directory.RemoveChild(file_context->meta_data.name));
           std::string new_name(RandomAlphaNumericString(5));
-          removed_context.meta_data.name = fs::path(new_name);
-          CHECK_NOTHROW(directory.AddChild(std::move(removed_context)));
+          file_context->meta_data.name = fs::path(new_name);
+          CHECK_NOTHROW(directory.AddChild(std::move(*file_context)));
           // Rename corresponding directory
           CheckedRename(itr->path(), (itr->path().parent_path() / new_name));
         } else if (fs::is_regular_file(*itr)) {
           if (itr->path().filename().string() != listing) {
             CHECK_NOTHROW(file_context = directory.GetMutableChild(itr->path().filename()));
-            FileContext removed_context;
-            CHECK_NOTHROW(removed_context = directory.RemoveChild(file_context->meta_data.name));
+            CHECK_NOTHROW(directory.RemoveChild(file_context->meta_data.name));
             std::string new_name(RandomAlphaNumericString(5) + ".txt");
-            removed_context.meta_data.name = fs::path(new_name);
-            CHECK_NOTHROW(directory.AddChild(std::move(removed_context)));
+            file_context->meta_data.name = fs::path(new_name);
+            CHECK_NOTHROW(directory.AddChild(std::move(*file_context)));
             // Rename corresponding file
             CheckedRename(itr->path(), (itr->path().parent_path() / new_name));
           }
@@ -529,6 +527,7 @@ TEST_CASE_METHOD(DirectoryTest, "Iterator reset", "[Directory][behavioural]") {
   // Add another element and check iterator is reset
   ++c;
   FileContext new_file_context(std::string(1, c), false);
+  auto name = new_file_context.meta_data.name;
   CHECK_NOTHROW(directory_.AddChild(std::move(new_file_context)));
   CHECK_NOTHROW(file_context = directory_.GetChildAndIncrementCounter());
   CHECK("A" == file_context->meta_data.name);
@@ -536,17 +535,16 @@ TEST_CASE_METHOD(DirectoryTest, "Iterator reset", "[Directory][behavioural]") {
   CHECK("B" == file_context->meta_data.name);
 
   // Remove an element and check iterator is reset
-  REQUIRE(directory_.HasChild(new_file_context.meta_data.name));
-  CHECK_NOTHROW(FileContext context(directory_.RemoveChild(new_file_context.meta_data.name)));
+  REQUIRE(directory_.HasChild(name));
+  CHECK_NOTHROW(directory_.RemoveChild(name));
   CHECK_NOTHROW(file_context = directory_.GetChildAndIncrementCounter());
   CHECK("A" == file_context->meta_data.name);
   CHECK_NOTHROW(file_context = directory_.GetChildAndIncrementCounter());
   CHECK("B" == file_context->meta_data.name);
 
   // Try to remove a non-existent element and check iterator is not reset
-  REQUIRE_FALSE(directory_.HasChild(new_file_context.meta_data.name));
-  CHECK_THROWS_AS(FileContext context(directory_.RemoveChild(new_file_context.meta_data.name)),
-                  std::exception);
+  REQUIRE_FALSE(directory_.HasChild(name));
+  CHECK_THROWS_AS(directory_.RemoveChild(name), std::exception);
   CHECK_NOTHROW(file_context = directory_.GetChildAndIncrementCounter());
   CHECK("C" == file_context->meta_data.name);
   CHECK_NOTHROW(file_context = directory_.GetChildAndIncrementCounter());

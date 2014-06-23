@@ -69,6 +69,10 @@ class Directory {
             std::function<void(const std::vector<ImmutableData::Name>&)> increment_chunks_functor,
             const boost::filesystem::path& path);
   ~Directory();
+  Directory(const Directory& other) = delete;
+  Directory(Directory&& other) = delete;
+  Directory& operator=(Directory other) = delete;
+
   // This marks the start of an attempt to store the directory.  It serialises the appropriate
   // member data (critically parent_id_ must never be serialised), and sets 'store_state_' to
   // kOngoing.  It also calls 'FlushChild' on all children (see below).
@@ -90,7 +94,7 @@ class Directory {
   FileContext* GetMutableChild(const boost::filesystem::path& name);
   const FileContext* GetChildAndIncrementCounter();
   void AddChild(FileContext&& child);
-  FileContext RemoveChild(const boost::filesystem::path& name);
+  void RemoveChild(const boost::filesystem::path& name);
   void RenameChild(const boost::filesystem::path& old_name,
                    const boost::filesystem::path& new_name);
   void ResetChildrenCounter();
@@ -110,10 +114,6 @@ class Directory {
   mutable std::mutex mutex_;
 
  private:
-  Directory(const Directory& other);
-  Directory(Directory&& other);
-  Directory& operator=(Directory other);
-
   typedef std::vector<std::unique_ptr<FileContext>> Children;
 
   Children::iterator Find(const boost::filesystem::path& name);

@@ -325,16 +325,14 @@ void Directory::AddChild(FileContext&& child) {
   DoScheduleForStoring();
 }
 
-FileContext Directory::RemoveChild(const fs::path& name) {
+void Directory::RemoveChild(const fs::path& name) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto itr(Find(name));
   if (itr == std::end(children_))
     BOOST_THROW_EXCEPTION(MakeError(DriveErrors::no_such_file));
-  std::unique_ptr<FileContext> file_context(std::move(*itr));
   children_.erase(itr);
   SortAndResetChildrenCounter();
   DoScheduleForStoring();
-  return std::move(*file_context);
 }
 
 void Directory::RenameChild(const fs::path& old_name, const fs::path& new_name) {

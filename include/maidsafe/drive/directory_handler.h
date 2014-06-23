@@ -66,6 +66,10 @@ class DirectoryHandler {
                    const Identity& root_parent_id, const boost::filesystem::path& disk_buffer_path,
                    bool create, boost::asio::io_service& asio_service);
   ~DirectoryHandler();
+  DirectoryHandler() = delete;
+  DirectoryHandler(const DirectoryHandler&) = delete;
+  DirectoryHandler(DirectoryHandler&&) = delete;
+  DirectoryHandler& operator=(const DirectoryHandler) = delete;
 
   void Add(const boost::filesystem::path& relative_path, FileContext&& file_context);
   Directory* Get(const boost::filesystem::path& relative_path);
@@ -81,16 +85,12 @@ class DirectoryHandler {
   friend class test::DirectoryHandlerTest;
 
  private:
-  DirectoryHandler();
-  DirectoryHandler(const DirectoryHandler&);
-  DirectoryHandler(DirectoryHandler&&);
-  DirectoryHandler& operator=(const DirectoryHandler);
 
   bool IsDirectory(const FileContext& file_context) const;
   std::pair<Directory*, FileContext*> GetParent(const boost::filesystem::path& relative_path);
   void PrepareNewPath(const boost::filesystem::path& new_relative_path, Directory* new_parent);
-  void RenameDifferentParent(const boost::filesystem::path& old_relative_path,
-                             const boost::filesystem::path& new_relative_path,
+  void RenameDifferentParent(boost::filesystem::path old_relative_path,
+                             boost::filesystem::path new_relative_path,
                              Directory* new_parent);
   void Put(Directory* directory);
   ImmutableData SerialiseDirectory(Directory* directory) const;
@@ -395,12 +395,13 @@ void DirectoryHandler<Storage>::PrepareNewPath(const boost::filesystem::path& ne
 
 template <typename Storage>
 void DirectoryHandler<Storage>::RenameDifferentParent(
-    const boost::filesystem::path& old_relative_path,
-    const boost::filesystem::path& new_relative_path,
+    boost::filesystem::path old_relative_path,
+    boost::filesystem::path new_relative_path,
     Directory* new_parent) {
   auto old_parent(GetParent(old_relative_path));
   assert(old_parent.first && old_parent.second && new_parent);
-  auto file_context(old_parent.first->RemoveChild(old_relative_path.filename()));
+  auto file_context(old_parent.first->GetChild(old_relative_path.filename()));
+  old_parent.first->RemoveChild(old_relative_path.filename());
 
 // #ifndef MAIDSAFE_WIN32
 //   struct stat old;
@@ -409,7 +410,7 @@ void DirectoryHandler<Storage>::RenameDifferentParent(
 //   time(&meta_data.attributes.st_mtime);
 //   meta_data.attributes.st_ctime = meta_data.attributes.st_mtime;
 // #endif
-  if (IsDirectory(file_context)) {
+  if (IsDirectory(*file_context)) {
     auto directory(Get(old_relative_path));
     DeleteAllVersions(directory);
     {
@@ -426,9 +427,9 @@ void DirectoryHandler<Storage>::RenameDifferentParent(
     directory->ScheduleForStoring();
   }
 
-  file_context.meta_data.name = new_relative_path.filename();
-  file_context.parent = new_parent;
-  new_parent->AddChild(std::move(file_context));
+  file_context.listing ->meta_data.name = new_relative_path;
+  file_context->meta_data.directory_id = new_parent;
+  new_parent->AddChild(std::move(*file_context));
 
 #ifdef MAIDSAFE_WIN32
   GetSystemTimeAsFileTime(&old_parent.second->meta_data.last_write_time);
@@ -446,7 +447,7 @@ void DirectoryHandler<Storage>::RenameDifferentParent(
   // if (IsDirectory(file_context)) {
   //   --old_parent_meta_data.attributes.st_nlink;
   //   ++new_parent_meta_data.attributes.st_nlink;
-  //   new_parent_meta_data.attributes.st_ctime = new_parent_meta_data.attributes.st_mtime =
+  //   new_parent_meta_data.attributes.st_ctime = new_parent_meta_data.attribute`s.st_mtime =
   //       old_parent_meta_data.attributes.st_mtime;
   // }
 #endif
